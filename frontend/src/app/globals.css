@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Colors */
+    --color-primary: #10B981;
+    --color-secondary: #1E293B;
+    --color-accent: #F59E0B;
+    --color-background: #F8FAFC;
+    --color-surface: #FFFFFF;
+    --color-text-primary: #1E293B;
+    --color-text-secondary: #64748B;
+    --color-error: #EF4444;
+    --color-success: #10B981;
+    --color-warning: #F59E0B;
+    --color-border: #E2E8F0;
+
+    /* Typography */
+    --font-heading: 'Inter', sans-serif;
+    --font-body: 'DM Sans', sans-serif;
+
+    /* Spacing (8pt grid) */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    --space-12: 48px;
+    --space-16: 64px;
+
+    /* Border Radius */
+    --radius-card: 16px;
+    --radius-button: 12px;
+    --radius-bottom-sheet: 24px;
+
+    /* Shadows */
+    --shadow-soft: 0 4px 6px rgba(0, 0, 0, 0.05);
+    --shadow-elevated: 0 10px 15px rgba(0, 0, 0, 0.1);
+
+    /* Z-Index */
+    --z-base: 0;
+    --z-dropdown: 10;
+    --z-sticky: 20;
+    --z-overlay: 30;
+    --z-modal: 40;
+    --z-popover: 50;
+    --z-toast: 60;
+
+    /* Animation */
+    --duration-fast: 150ms;
+    --duration-normal: 300ms;
+    --duration-slow: 500ms;
+    --easing-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Touch Target */
+    --touch-target: 44px;
+  }
+
+  .dark {
+    --color-background: #0F172A;
+    --color-surface: #1E293B;
+    --color-text-primary: #F8FAFC;
+    --color-text-secondary: #94A3B8;
+    --color-border: #334155;
+  }
+
+  html {
+    font-family: var(--font-body);
+    color: var(--color-text-primary);
+    background-color: var(--color-background);
+  }
+
+  body {
+    @apply antialiased;
+    min-height: 100dvh;
+  }
+
+  /* Focus visible ring for accessibility */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2;
+  }
+
+  /* Reduced motion support */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Touch target minimum */
+  .touch-target {
+    @apply min-h-[44px] min-w-[44px];
+  }
+
+  /* Skeleton shimmer */
+  .skeleton {
+    @apply bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700;
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite linear;
+  }
+}
