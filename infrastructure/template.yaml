@@ -1,0 +1,1235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SwapSmart AI Battery Network Platform
+  Serverless infrastructure for real-time battery swap coordination
+  Region: af-south-1 (Cape Town)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment
+
+  APNPartnerId:
+    Type: String
+    Description: Arthurite AWS APN Partner ID (required for hackathon shortlisting)
+    MinLength: 1
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        TABLE_NAME: !Ref SwapSmartTable
+        LEDGER_TABLE_NAME: !Ref SwapSmartLedgerTable
+    Tags:
+      APN-Partner-ID: !Ref APNPartnerId
+      Project: SwapSmart
+      Environment: !Ref Environment
+
+Resources:
+  # =============================================================================
+  # DynamoDB Primary Table — Single-Table Design
+  # =============================================================================
+  SwapSmartTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub SwapSmart-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: false
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+        - AttributeName: GSI3PK
+          AttributeType: S
+        - AttributeName: GSI3SK
+          AttributeType: S
+        - AttributeName: GSI4PK
+          AttributeType: S
+        - AttributeName: GSI4SK
+          AttributeType: S
+        - AttributeName: GSI5PK
+          AttributeType: S
+        - AttributeName: GSI5SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # GSI1: DriverReservations — Query driver's reservations by state
+        - IndexName: GSI1-DriverReservations
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI2: StationReservations — Query station's reservation queue
+        - IndexName: GSI2-StationReservations
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI3: PhoneLookup — Find user by phone number for auth
+        - IndexName: GSI3-PhoneLookup
+          KeySchema:
+            - AttributeName: GSI3PK
+              KeyType: HASH
+            - AttributeName: GSI3SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI4: ReceiptLookup — Look up swap transaction by receipt ID
+        - IndexName: GSI4-ReceiptLookup
+          KeySchema:
+            - AttributeName: GSI4PK
+              KeyType: HASH
+            - AttributeName: GSI4SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI5: FleetDrivers — Query fleet's driver list
+        - IndexName: GSI5-FleetDrivers
+          KeySchema:
+            - AttributeName: GSI5PK
+              KeyType: HASH
+            - AttributeName: GSI5SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =============================================================================
+  # DynamoDB Ledger Table — Append-Only Financial Audit Trail
+  # =============================================================================
+  SwapSmartLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub SwapSmart_Ledger-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =============================================================================
+  # Task 1.2 — Cognito User Pool with Custom OTP Auth Flow
+  # =============================================================================
+  SwapSmartUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub SwapSmart-UserPool-${Environment}
+      UsernameAttributes:
+        - phone_number
+      AutoVerifiedAttributes:
+        - phone_number
+      Schema:
+        - Name: phone_number
+          Required: true
+          Mutable: true
+        - Name: name
+          Required: true
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+      LambdaConfig:
+        DefineAuthChallenge: !GetAtt DefineAuthChallengeFn.Arn
+        CreateAuthChallenge: !GetAtt CreateAuthChallengeFn.Arn
+        VerifyAuthChallengeResponse: !GetAtt VerifyAuthChallengeFn.Arn
+      UserPoolTags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # Cognito Lambda Triggers (placeholder functions for custom auth)
+  DefineAuthChallengeFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub SwapSmart-DefineAuthChallenge-${Environment}
+      Handler: index.handler
+      Runtime: nodejs20.x
+      InlineCode: |
+        exports.handler = async (event) => {
+          // Placeholder: Define custom auth challenge flow
+          event.response.challengeName = 'CUSTOM_CHALLENGE';
+          event.response.issueTokens = false;
+          event.response.failAuthentication = false;
+          return event;
+        };
+
+  CreateAuthChallengeFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub SwapSmart-CreateAuthChallenge-${Environment}
+      Handler: index.handler
+      Runtime: nodejs20.x
+      InlineCode: |
+        exports.handler = async (event) => {
+          // Placeholder: Generate and send OTP
+          event.response.publicChallengeParameters = { phone: event.request.userAttributes.phone_number };
+          event.response.privateChallengeParameters = { answer: '123456' };
+          return event;
+        };
+
+  VerifyAuthChallengeFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub SwapSmart-VerifyAuthChallenge-${Environment}
+      Handler: index.handler
+      Runtime: nodejs20.x
+      InlineCode: |
+        exports.handler = async (event) => {
+          // Placeholder: Verify OTP answer
+          const expected = event.request.privateChallengeParameters.answer;
+          event.response.answerCorrect = (event.request.challengeAnswer === expected);
+          return event;
+        };
+
+  # Cognito Lambda Invoke Permissions
+  DefineAuthChallengePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DefineAuthChallengeFn.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt SwapSmartUserPool.Arn
+
+  CreateAuthChallengePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CreateAuthChallengeFn.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt SwapSmartUserPool.Arn
+
+  VerifyAuthChallengePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt VerifyAuthChallengeFn.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt SwapSmartUserPool.Arn
+
+  # Cognito User Pool Client
+  SwapSmartUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub SwapSmart-Client-${Environment}
+      UserPoolId: !Ref SwapSmartUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      RefreshTokenValidity: 24
+      TokenValidityUnits:
+        AccessToken: hours
+        RefreshToken: hours
+      PreventUserExistenceErrors: ENABLED
+
+  # Cognito User Pool Groups
+  DriversGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Drivers
+      UserPoolId: !Ref SwapSmartUserPool
+      Description: Battery swap drivers (keke operators)
+
+  OperatorsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Operators
+      UserPoolId: !Ref SwapSmartUserPool
+      Description: Station operators managing swap stations
+
+  FleetManagersGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: FleetManagers
+      UserPoolId: !Ref SwapSmartUserPool
+      Description: Fleet managers overseeing vehicle fleets
+
+  # =============================================================================
+  # Task 1.3 — API Gateway (REST + WebSocket) with WAF
+  # =============================================================================
+  SwapSmartApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub SwapSmart-REST-API-${Environment}
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key'"
+        AllowOrigin: "'*'"
+      BinaryMediaTypes:
+        - application/octet-stream
+        - image/*
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # WebSocket API for real-time updates
+  SwapSmartWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub SwapSmart-WebSocket-${Environment}
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: $request.body.action
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # WebSocket Routes
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SwapSmartWebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SwapSmartWebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SwapSmartWebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE
+
+  # WebSocket Stage
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SwapSmartWebSocketApi
+      StageName: !Ref Environment
+      AutoDeploy: true
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # WAF WebACL for REST API protection
+  SwapSmartWAF:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub SwapSmart-WAF-${Environment}
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub SwapSmartWAF-${Environment}
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+      Rules:
+        # Rate Limit: 2000 requests per 5 minutes per IP
+        - Name: RateLimitRule
+          Priority: 1
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRule
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+        # Geo-Restriction: Allow only NG, GH, KE, ZA
+        - Name: GeoRestrictionRule
+          Priority: 2
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GeoRestrictionRule
+          Statement:
+            NotStatement:
+              Statement:
+                GeoMatchStatement:
+                  CountryCodes:
+                    - NG
+                    - GH
+                    - KE
+                    - ZA
+        # AWS Managed Rules: Common Rule Set
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSet
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+        # AWS Managed Rules: SQL Injection Rule Set
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 4
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesSQLiRuleSet
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+        # Size Restriction: Block requests with body > 10KB
+        - Name: SizeRestrictionRule
+          Priority: 5
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SizeRestrictionRule
+          Statement:
+            SizeConstraintStatement:
+              FieldToMatch:
+                Body: {}
+              ComparisonOperator: GT
+              Size: 10240
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+
+  # WAF Association with REST API
+  SwapSmartWAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${SwapSmartApi}/stages/${Environment}
+      WebACLArn: !GetAtt SwapSmartWAF.Arn
+
+  # =============================================================================
+  # Task 1.4 — ElastiCache Redis Cluster with VPC
+  # =============================================================================
+  # VPC for Redis (Lambda connects via VPC config)
+  SwapSmartVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub SwapSmart-VPC-${Environment}
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Private Subnet 1
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SwapSmartVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub SwapSmart-PrivateSubnet1-${Environment}
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Private Subnet 2
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SwapSmartVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub SwapSmart-PrivateSubnet2-${Environment}
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for Lambda functions accessing Redis
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lambda functions accessing Redis
+      VpcId: !Ref SwapSmartVPC
+      Tags:
+        - Key: Name
+          Value: !Sub SwapSmart-Lambda-SG-${Environment}
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for Redis cluster
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ElastiCache Redis cluster
+      VpcId: !Ref SwapSmartVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub SwapSmart-Redis-SG-${Environment}
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ElastiCache Subnet Group
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub swapsmart-redis-subnets-${Environment}
+      Description: Subnet group for SwapSmart Redis cluster
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ElastiCache Redis Cluster
+  SwapSmartRedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub swapsmart-redis-${Environment}
+      Engine: redis
+      EngineVersion: '7.1'
+      CacheNodeType: cache.t4g.micro
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      TransitEncryptionEnabled: true
+      AtRestEncryptionEnabled: true
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =============================================================================
+  # Task 1.5 — EventBridge Event Bus and Scheduled Rules
+  # =============================================================================
+  SwapSmartEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub swapsmart-events-${Environment}
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Dead-letter queue for failed event deliveries
+  EventBridgeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub swapsmart-events-dlq-${Environment}
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Placeholder Lambda for reservation expiry handler
+  ReservationExpiryFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub SwapSmart-ReservationExpiry-${Environment}
+      Handler: index.handler
+      Runtime: nodejs20.x
+      InlineCode: |
+        exports.handler = async (event) => {
+          // Placeholder: Check and expire overdue reservations
+          console.log('Reservation expiry check triggered', JSON.stringify(event));
+          return { statusCode: 200 };
+        };
+
+  # Scheduled rule for reservation expiry (every 1 minute)
+  ReservationExpiryRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub swapsmart-reservation-expiry-${Environment}
+      Description: Check for expired reservations every minute
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Id: ReservationExpiryTarget
+          Arn: !GetAtt ReservationExpiryFn.Arn
+          DeadLetterConfig:
+            Arn: !GetAtt EventBridgeDLQ.Arn
+
+  # Permission for EventBridge to invoke expiry Lambda
+  ReservationExpiryPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ReservationExpiryFn.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ReservationExpiryRule.Arn
+
+  # =============================================================================
+  # Task 1.6 — S3 + CloudFront + IoT Core
+  # =============================================================================
+  # S3 Bucket for static assets
+  SwapSmartAssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub swapsmart-assets-${Environment}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket Policy for CloudFront OAC access
+  SwapSmartAssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SwapSmartAssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${SwapSmartAssetsBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${SwapSmartDistribution}
+
+  # CloudFront Origin Access Control
+  SwapSmartOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub SwapSmart-OAC-${Environment}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution
+  SwapSmartDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Sub SwapSmart CDN - ${Environment}
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt SwapSmartAssetsBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt SwapSmartOAC.Id
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          Compress: true
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+        # Custom error responses for SPA routing
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IoT Core Thing Type for swap stations
+  SwapStationThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: SwapStation
+      ThingTypeProperties:
+        ThingTypeDescription: Battery swap station IoT device type
+        SearchableAttributes:
+          - stationId
+          - region
+          - status
+
+  # IoT Rule: Route battery state changes to EventBridge
+  BatteryStateIoTRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub SwapSmart_BatteryStateChange_${Environment}
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'swapsmart/+/battery/state'"
+        Description: Route battery state changes from stations to EventBridge
+        RuleDisabled: false
+        AwsIotSqlVersion: '2016-03-23'
+        Actions:
+          - IotEvents:
+              InputName: !Sub swapsmart-battery-events-${Environment}
+              RoleArn: !GetAtt IoTEventBridgeRole.Arn
+        ErrorAction:
+          Sqs:
+            QueueUrl: !Ref EventBridgeDLQ
+            RoleArn: !GetAtt IoTEventBridgeRole.Arn
+
+  # IAM Role for IoT to publish to EventBridge
+  IoTEventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub SwapSmart-IoT-EventBridge-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IoTToEventBridge
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !GetAtt SwapSmartEventBus.Arn
+              - Effect: Allow
+                Action:
+                  - iotevents:BatchPutMessage
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt EventBridgeDLQ.Arn
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =============================================================================
+  # Task 1.7 — CloudWatch Monitoring, Alarms, and Notifications
+  # =============================================================================
+  # SNS Topic for alarm notifications
+  SwapSmartAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub swapsmart-alarms-${Environment}
+      Tags:
+        - Key: APN-Partner-ID
+          Value: !Ref APNPartnerId
+        - Key: Project
+          Value: SwapSmart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Dashboard
+  SwapSmartDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub SwapSmart-${Environment}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Invocations & Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "SwapSmart-ReservationExpiry-${Environment}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "SwapSmart-ReservationExpiry-${Environment}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "API Gateway Latency",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ApiGateway", "Latency", "ApiName", "SwapSmart-REST-API-${Environment}"]
+                ],
+                "period": 300,
+                "stat": "p95"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "DynamoDB Read/Write Capacity",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "SwapSmart-${Environment}"],
+                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "SwapSmart-${Environment}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Redis Cache Hits/Misses",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ElastiCache", "CacheHits", "CacheClusterId", "swapsmart-redis-${Environment}"],
+                  ["AWS/ElastiCache", "CacheMisses", "CacheClusterId", "swapsmart-redis-${Environment}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            }
+          ]
+        }
+
+  # Lambda Error Rate Alarm (>5% error rate)
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SwapSmart-LambdaErrors-${Environment}
+      AlarmDescription: Lambda error rate exceeds 5%
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref SwapSmartAlarmTopic
+
+  LambdaInvocationsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SwapSmart-LambdaInvocations-${Environment}
+      AlarmDescription: Lambda invocations baseline for composite alarm
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # Composite Alarm: Lambda error rate >5% when invocations are happening
+  SwapSmartCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub SwapSmart-HighErrorRate-${Environment}
+      AlarmDescription: Composite alarm - Lambda error rate >5% with active invocations
+      AlarmRule: !Sub ALARM(${LambdaErrorAlarm}) AND ALARM(${LambdaInvocationsAlarm})
+      AlarmActions:
+        - !Ref SwapSmartAlarmTopic
+
+  # =============================================================================
+  # Task 1.9 — Amazon Location Service Resources
+  # =============================================================================
+  # Map resource for driver app and fleet portal rendering
+  SwapSmartMap:
+    Type: AWS::Location::Map
+    Properties:
+      MapName: !Sub SwapSmart-Map-${Environment}
+      Configuration:
+        Style: VectorEsriNavigation
+      Description: Map for SwapSmart driver and fleet portal
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # Place Index for geocoding and station search
+  SwapSmartPlaceIndex:
+    Type: AWS::Location::PlaceIndex
+    Properties:
+      IndexName: !Sub SwapSmart-PlaceIndex-${Environment}
+      DataSource: Esri
+      DataSourceConfiguration:
+        IntendedUse: SingleUse
+      Description: Geocoding and station area search
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # Route Calculator for ETA and turn-by-turn routing
+  SwapSmartRouteCalculator:
+    Type: AWS::Location::RouteCalculator
+    Properties:
+      CalculatorName: !Sub SwapSmart-RouteCalc-${Environment}
+      DataSource: Esri
+      Description: ETA computation and routing to swap stations
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+  # Geofence Collection for station arrival detection
+  SwapSmartGeofenceCollection:
+    Type: AWS::Location::GeofenceCollection
+    Properties:
+      CollectionName: !Sub SwapSmart-Geofences-${Environment}
+      Description: Station geofences for arrival detection (100m radius)
+      Tags:
+        APN-Partner-ID: !Ref APNPartnerId
+        Project: SwapSmart
+        Environment: !Ref Environment
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  # DynamoDB Outputs
+  SwapSmartTableName:
+    Description: Name of the primary DynamoDB single-table
+    Value: !Ref SwapSmartTable
+    Export:
+      Name: !Sub ${AWS::StackName}-SwapSmartTable
+
+  SwapSmartTableArn:
+    Description: ARN of the primary DynamoDB table
+    Value: !GetAtt SwapSmartTable.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-SwapSmartTableArn
+
+  SwapSmartLedgerTableName:
+    Description: Name of the wallet ledger DynamoDB table
+    Value: !Ref SwapSmartLedgerTable
+    Export:
+      Name: !Sub ${AWS::StackName}-SwapSmartLedgerTable
+
+  SwapSmartLedgerTableArn:
+    Description: ARN of the wallet ledger DynamoDB table
+    Value: !GetAtt SwapSmartLedgerTable.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-SwapSmartLedgerTableArn
+
+  # Cognito Outputs
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref SwapSmartUserPool
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolId
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt SwapSmartUserPool.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolArn
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref SwapSmartUserPoolClient
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolClientId
+
+  # API Gateway Outputs
+  RestApiId:
+    Description: REST API Gateway ID
+    Value: !Ref SwapSmartApi
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiId
+
+  RestApiUrl:
+    Description: REST API Gateway URL
+    Value: !Sub https://${SwapSmartApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiUrl
+
+  WebSocketApiId:
+    Description: WebSocket API Gateway ID
+    Value: !Ref SwapSmartWebSocketApi
+    Export:
+      Name: !Sub ${AWS::StackName}-WebSocketApiId
+
+  WebSocketUrl:
+    Description: WebSocket API URL
+    Value: !Sub wss://${SwapSmartWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+    Export:
+      Name: !Sub ${AWS::StackName}-WebSocketUrl
+
+  # ElastiCache Outputs
+  RedisEndpoint:
+    Description: ElastiCache Redis endpoint address
+    Value: !GetAtt SwapSmartRedisCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisEndpoint
+
+  RedisPort:
+    Description: ElastiCache Redis port
+    Value: !GetAtt SwapSmartRedisCluster.RedisEndpoint.Port
+    Export:
+      Name: !Sub ${AWS::StackName}-RedisPort
+
+  # VPC Outputs
+  VpcId:
+    Description: VPC ID for Lambda/Redis networking
+    Value: !Ref SwapSmartVPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VpcId
+
+  PrivateSubnet1Id:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnet1
+
+  PrivateSubnet2Id:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnet2
+
+  LambdaSecurityGroupId:
+    Description: Security Group ID for Lambda functions
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaSG
+
+  # EventBridge Outputs
+  EventBusName:
+    Description: Custom EventBridge bus name
+    Value: !Ref SwapSmartEventBus
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusName
+
+  EventBusArn:
+    Description: Custom EventBridge bus ARN
+    Value: !GetAtt SwapSmartEventBus.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusArn
+
+  EventBridgeDLQUrl:
+    Description: Dead-letter queue URL for failed events
+    Value: !Ref EventBridgeDLQ
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBridgeDLQ
+
+  # S3 + CloudFront Outputs
+  AssetsBucketName:
+    Description: S3 bucket for static assets
+    Value: !Ref SwapSmartAssetsBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-AssetsBucket
+
+  AssetsBucketArn:
+    Description: S3 assets bucket ARN
+    Value: !GetAtt SwapSmartAssetsBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-AssetsBucketArn
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref SwapSmartDistribution
+    Export:
+      Name: !Sub ${AWS::StackName}-CloudFrontId
+
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt SwapSmartDistribution.DomainName
+    Export:
+      Name: !Sub ${AWS::StackName}-CloudFrontDomain
+
+  # CloudWatch Outputs
+  AlarmTopicArn:
+    Description: SNS topic ARN for alarm notifications
+    Value: !Ref SwapSmartAlarmTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-AlarmTopicArn
+
+  DashboardName:
+    Description: CloudWatch dashboard name
+    Value: !Ref SwapSmartDashboard
+    Export:
+      Name: !Sub ${AWS::StackName}-DashboardName
+
+  # Amazon Location Service Outputs
+  MapName:
+    Description: Amazon Location Service Map name
+    Value: !Ref SwapSmartMap
+    Export:
+      Name: !Sub ${AWS::StackName}-MapName
+
+  PlaceIndexName:
+    Description: Amazon Location Service Place Index name
+    Value: !Ref SwapSmartPlaceIndex
+    Export:
+      Name: !Sub ${AWS::StackName}-PlaceIndexName
+
+  RouteCalculatorName:
+    Description: Amazon Location Service Route Calculator name
+    Value: !Ref SwapSmartRouteCalculator
+    Export:
+      Name: !Sub ${AWS::StackName}-RouteCalculatorName
+
+  GeofenceCollectionName:
+    Description: Amazon Location Service Geofence Collection name
+    Value: !Ref SwapSmartGeofenceCollection
+    Export:
+      Name: !Sub ${AWS::StackName}-GeofenceCollectionName
+
+  # WAF Output
+  WAFWebACLArn:
+    Description: WAF WebACL ARN
+    Value: !GetAtt SwapSmartWAF.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-WAFWebACLArn
+
+  # General
+  StackRegion:
+    Description: AWS Region where the stack is deployed
+    Value: !Ref AWS::Region

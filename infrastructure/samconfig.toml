@@ -1,0 +1,15 @@
+# SAM CLI configuration for SwapSmart
+# Run `sam deploy` from the infrastructure/ directory
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "swapsmart-dev"
+region = "af-south-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+
+[default.build.parameters]
+cached = true
+parallel = true
